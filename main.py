@@ -1,58 +1,63 @@
-import asyncio
 import logging
-import sys
-
-from aiogram import Bot, Dispatcher, types
+from fastapi import FastAPI, Request
+from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart
-from aiogram.types import Message
+from aiogram.types import Message, Update
 from aiogram.exceptions import TelegramRetryAfter
 
-# Bot tokeningiz
+# 1. Bot sozlamalari
 API_TOKEN = '8458722464:AAHACZTZRAgR-jlC1fPJj2m2a1CvFkymf1g'
 
-# Bot va Dispatcher obyektlarini yaratish
+# 2. Obyektlarni yaratish
+bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
+app = FastAPI()
+
+# --- HANDLERLAR ---
 
 @dp.message(CommandStart())
 async def command_start_handler(message: Message):
-    await message.answer("Salom! Menga telefon raqamini yuboring (masalan: +998901234567), men uni kontakt ko'rinishida yuboraman.")
+    await message.answer("Salom! Menga telefon raqamini yuboring, men uni kontakt ko'rinishida yuboraman.")
 
 @dp.message()
 async def send_contact_handler(message: Message):
+    # Matn bo'lmasa ishlamaydi (rasm, stiker va h.k.)
+    if not message.text:
+        return
+
     phone_number = message.text.strip()
     
-    # Raqamni tekshirish (faqat raqamlar va + belgisi bormi)
+    # Raqam ekanligini tekshirish
     if phone_number.replace('+', '').isdigit():
         try:
-            # Telegramga so'rov yuborishdan oldin juda qisqa tanaffus 
-            # Bu botga ketma-ket yuklama tushishini kamaytiradi
-            await asyncio.sleep(0.5) 
-
             await message.answer_contact(
                 phone_number=phone_number,
                 first_name="Kontakt"
             )
         except TelegramRetryAfter as e:
-            # Agar baribir limitdan oshib ketsa, bot o'chib qolmasligi uchun
-            logging.error(f"Limit oshib ketdi! {e.retry_after} soniya kutish kerak.")
-            await message.answer(f"Xabar yuborish limiti oshdi. Iltimos, {e.retry_after} soniyadan keyin qayta urinib ko'ring.")
+            await message.answer(f"Limit oshdi. Iltimos, {e.retry_after} soniya kuting.")
         except Exception as e:
-            logging.error(f"Kutilmagan xato: {e}")
+            logging.error(f"Xato yuz berdi: {e}")
     else:
-        await message.answer("Iltimos, to'g'ri telefon raqami yuboring.")
+        await message.answer("Iltimos, to'g'ri telefon raqami yuboring (masalan: +998901234567).")
 
-async def main():
-    # Bot obyektini yaratish
-    bot = Bot(token=API_TOKEN)
-    
-    # Eski xabarlarni tozalash (Bot o'chiq turganda kelgan xabarlarga javob qaytarmasligi uchun)
-    await bot.delete_webhook(drop_pending_updates=True)
-    
-    await dp.start_polling(bot)
+# --- VERCEL VA WEBHOOK QISMI ---
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    """Telegram xabarlarini qabul qilish uchun endpoint"""
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Bot to'xtatildi")
+        data = await request.json()
+        update = Update.model_validate(data, context={"bot": bot})
+        await dp.feed_update(bot, update)
+        return {"status": "ok"}
+    except Exception as e:
+        logging.error(f"Webhook error: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/")
+async def index():
+    """Bot holatini tekshirish uchun"""
+    return {"message": "Bot is running...", "status": "active"}
+
+# Muhim: Vercel-da asyncio.run() yoki polling ishlatilmaydi.
